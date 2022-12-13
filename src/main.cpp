@@ -1,45 +1,31 @@
 #include <Arduino.h>
 
+#define IRSND_IR_FREQUENCY 38000
+
+#define IRSND_OUTPUT_PIN 5
+
+// Needs to be included before `irsnd.hpp`.
+#include <irsndSelectMain15Protocols.h>
+
+#include <irsnd.hpp>
+
+#include <ExternalDevice.h>
 #include <LowPower.h>
+#include <State.h>
 #include <nectransmitter.h>
 
-#define IR_PIN 3
+#define NAD_IR_PIN 6
 #define RELAY_PIN 4
-#define TRIGGER_PIN 2
+#define MAIN_AMP_TRIGGER_PIN 2
+#define SHIELD_TRIGGER_PIN 3
 
-NECTransmitter necTransmitter(IR_PIN);
+NECTransmitter necTransmitter(NAD_IR_PIN);
 
 //#define DEBUG
 
-volatile int triggerPinState;
-
-void wakeUp() {
-#ifdef DEBUG
-  Serial.println("Pin changed.");
-#endif
-
-  triggerPinState = digitalRead(TRIGGER_PIN);
-}
-
-void setup() {
-#ifdef DEBUG
-  Serial.begin(115200);
-#endif
-
-  pinMode(TRIGGER_PIN, INPUT_PULLUP);
-  pinMode(LED_BUILTIN, OUTPUT);
-  pinMode(RELAY_PIN, OUTPUT);
-
-  attachInterrupt(digitalPinToInterrupt(TRIGGER_PIN), wakeUp, CHANGE);
-
-#ifdef DEBUG
-  Serial.println("Started.");
-#endif
-
-  delay(500);
-}
-
-void SwitchOffAmps() {
+void
+SwitchOffAmps()
+{
   digitalWrite(RELAY_PIN, LOW);
   necTransmitter.SendExtendedNEC(0x877C, 0x80);
 
@@ -49,7 +35,9 @@ void SwitchOffAmps() {
 #endif
 }
 
-void SwitchOnAmps() {
+void
+SwitchOnAmps()
+{
   digitalWrite(RELAY_PIN, HIGH);
   necTransmitter.SendExtendedNEC(0x877C, 0x80);
 
@@ -59,32 +47,77 @@ void SwitchOnAmps() {
 #endif
 }
 
-void WaitForMainAmpOn() {
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  if (triggerPinState == LOW) {
-    WaitForMainAmpOn();
+void
+denonAVRTriggered();
+
+void
+shieldTriggered();
+
+void
+denonPowerStateChanged(int newState)
+{
+  if (newState == HIGH) {
+    SwitchOnAmps();
+  } else {
+    SwitchOffAmps();
   }
 }
 
-void WaitForMainAmpOff() {
-  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
-  if (triggerPinState == HIGH) {
-    WaitForMainAmpOff();
-  }
+void
+shieldPowerStateChanged(int)
+{
+  IRMP_DATA irsnd_data = { IRMP_NEC_PROTOCOL, 0xFF00, 0x40 };
+  irsnd_send_data(&irsnd_data, true);
 }
 
-void loop() {
+ExternalDevice denonAVR(MAIN_AMP_TRIGGER_PIN,
+                        &denonAVRTriggered,
+                        &denonPowerStateChanged);
+
+ExternalDevice shield(SHIELD_TRIGGER_PIN,
+                      &shieldTriggered,
+                      &shieldPowerStateChanged);
+
+void
+denonAVRTriggered()
+{
+  denonAVR.Trigger();
+}
+
+void
+shieldTriggered()
+{
+  shield.Trigger();
+}
+
+void
+setup()
+{
 #ifdef DEBUG
-  Serial.println("Main amp off. Waiting for trigger...");
+  Serial.begin(115200);
 #endif
 
-  WaitForMainAmpOn();
-  SwitchOnAmps();
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+
+  irsnd_init();
 
 #ifdef DEBUG
-  Serial.println("Main amp on. Waiting for turn off.");
+  Serial.println("Started.");
+  delay(500);
 #endif
 
-  WaitForMainAmpOff();
-  SwitchOffAmps();
+  // Go to sleep.
+  LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+}
+
+void
+loop()
+{
+  denonAVR.Handle();
+  shield.Handle();
+
+  if (denonAVR.CanGoToSleep() && shield.CanGoToSleep()) {
+    LowPower.powerDown(SLEEP_FOREVER, ADC_OFF, BOD_OFF);
+  }
 }
